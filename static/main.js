@@ -78,7 +78,7 @@ let processLocalFrame = async () => {
         const imageData = localVideoCanvas.toDataURL('image/jpeg');
 
         // Send frame to backend for processing
-        const response = await fetch('http://localhost:5000/process_frame', {
+        const response = await fetch('http://127.0.0.1:5000/process_frame', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
@@ -91,9 +91,6 @@ let processLocalFrame = async () => {
         }
 
         const result = await response.json();
-        
-        // Debugging: Check if processed frame URL is valid
-        console.log('Processed frame URL:', result.processed_frame);
 
         // Display processed frame
         const processedImage = new Image();
@@ -105,6 +102,7 @@ let processLocalFrame = async () => {
 
         // Use keypoints as needed
         console.log('Keypoints:', result.keypoints);
+        // console.log('Prediction:', result.prediction);
     } catch (error) {
         console.error('Error processing frame:', error);
     }

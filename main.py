@@ -5,10 +5,12 @@ import matplotlib.pyplot as plt
 import mediapipe as mp
 import os
 import time
-# import tensorflow as tf
+from tensorflow.keras.models import load_model
 from collections import deque
 import base64
 from flask_cors import CORS
+from collections import deque
+
 
 app = Flask(__name__)
 CORS(app)  # This will enable CORS for all routes
@@ -18,6 +20,11 @@ mp_holistic = mp.solutions.holistic
 
 holistic = mp_holistic.Holistic(min_detection_confidence=0.5, min_tracking_confidence=0.5)
 
+model = load_model('lstm.h5')
+actions = ['beautiful', 'blind', 'deaf', 'happy', 'loud', 'quiet']
+actions = np.array(actions)
+
+keypoints_queue = deque(maxlen=58)
 def mediapipe_detection(image, model):
     image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
     image.flags.writeable = False
@@ -57,6 +64,7 @@ def lobby():
 
 @app.route('/process_frame', methods=['POST'])
 def process_frame():
+    time.sleep(0.1)
     # Get the frame data from the request
     frame_data = request.json['frame']
     
@@ -69,6 +77,15 @@ def process_frame():
     image, results = mediapipe_detection(frame, holistic)
     draw_landmarks(image, results)
     keypoints = extract_keypoints(results)
+
+    # if len(keypoints_queue) == 58:
+    #     input_data = np.array(keypoints_queue)  # Convert deque to numpy array
+    #     input_data = np.expand_dims(input_data, axis=0)  # Add batch dimension
+        
+    #     # # Make a prediction using the LSTM model
+    #     prediction = model.predict(input_data)
+    #     # Print the prediction
+    #     print("Prediction:", actions[np.argmax(prediction)])
     
     # Encode the processed image back to base64
     _, buffer = cv2.imencode('.jpg', image)
@@ -77,6 +94,7 @@ def process_frame():
     return jsonify({
         'processed_frame': f'data:image/jpeg;base64,{processed_frame}',
         'keypoints': keypoints.tolist()
+        # 'prediction': actions[np.argmax(prediction)]
     })
 
 if __name__ == '__main__':
