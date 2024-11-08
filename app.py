@@ -6,6 +6,23 @@ import torch
 import time
 from collections import deque
 from models.model import SignLanguageModel
+import streamlit as st
+import cv2
+import mediapipe as mp
+import numpy as np
+import torch
+import time
+from collections import deque
+from models.model import SignLanguageModel
+import os
+from dotenv import load_dotenv
+from langchain_groq import ChatGroq
+from langchain_core.messages import HumanMessage
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+
+# Load environment variables
+load_dotenv()
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
 # Add drawing utilities
 mp_drawing = mp.solutions.drawing_utils
@@ -13,12 +30,13 @@ mp_drawing_styles = mp.solutions.drawing_styles
 mp_hands = mp.solutions.hands
 mp_pose = mp.solutions.pose
 # Constants
+SENTENCE_END_TIMEOUT = 5.0
 BUFFER_SIZE = 10
 MOTION_THRESHOLD = 0.05
 STATIC_THRESHOLD = 0.05
 STATIC_FRAME_COUNT = 20
 MAX_GESTURE_FRAMES = 200
-MIN_GESTURE_FRAMES = 35
+MIN_GESTURE_FRAMES = 20
 REQUIRED_FRAMES = 65
 
 # Label mapping
@@ -87,6 +105,47 @@ class SignLanguageDetector:
         self.gesture_in_progress = False
         self.last_prediction = ""
         self.last_confidence = 0.0
+
+        self.current_sentence = []
+        self.last_prediction_time = time.time()
+        self.sentence_in_progress = False
+        
+        # Initialize Groq
+        self.llm = ChatGroq(
+            model="gemma2-9b-it",
+            groq_api_key=GROQ_API_KEY
+        )
+        self.prompt = ChatPromptTemplate.from_messages([
+            ("system", "You are a helpful assistant that takes a list of sign language words "
+                      "and converts them into a natural, grammatically correct sentence. "
+                      "Focus on maintaining the original meaning while making it flow naturally."),
+            MessagesPlaceholder(variable_name="messages")
+        ])
+        self.chain = self.prompt | self.llm
+
+    def process_sentence(self):
+        """Process collected words through LLM to form a sentence"""
+        if not self.current_sentence:
+            return ""
+                
+        words = " ".join(self.current_sentence)
+        try:
+            response = self.chain.invoke({
+                "messages": [
+                    HumanMessage(content=f"Convert to natural sentence, be brief and direct: {words}")
+                ]
+            })
+            # Clean up the response - remove quotes and extra text
+            sentence = response.content
+            sentence = sentence.strip('"').strip("'")  # Remove quotes
+            sentence = sentence.split('\n')[0]  # Take only first line
+            # Remove any extra commentary
+            if '.' in sentence:
+                sentence = sentence.split('.')[0] + '.'
+            return sentence
+        except Exception as e:
+            return " ".join(self.current_sentence)
+
         
     def normalize_features(self, features):
         """Normalize features to [-1, 1] range"""
@@ -241,6 +300,7 @@ class SignLanguageDetector:
             return np.array(new_frames)
 
     def process_gesture(self, features):
+        """Process gesture and get prediction"""
         adjusted_features = self.adjust_frames(self.gesture_frames)
         model_input = torch.FloatTensor(adjusted_features).unsqueeze(0).to(self.device)
         
@@ -251,37 +311,83 @@ class SignLanguageDetector:
             
         self.last_prediction = self.idx_to_label[predicted_class]
         self.last_confidence = confidence
+        
+        # Start sentence if needed
+        if self.last_confidence > 0.5:
+            if not self.sentence_in_progress:
+                self.sentence_in_progress = True
+                self.current_sentence = []
+            
+            # Add word if it's new
+            if not self.current_sentence or self.last_prediction != self.current_sentence[-1]:
+                self.current_sentence.append(self.last_prediction)
+                self.last_prediction_time = time.time()
+        
+        return self.last_prediction, self.last_confidence
 
+    def update_sentence(self):
+        """Handle sentence building and completion"""
+        current_time = time.time()
+        time_since_last = current_time - self.last_prediction_time
+        
+        # Handle word collection
+        if self.last_confidence > 0.5:
+            # Start collecting words
+            if not self.sentence_in_progress:
+                self.sentence_in_progress = True
+                self.current_sentence = []
+            
+            # Reset timer when new word is added
+            if (not self.current_sentence or 
+                (self.last_prediction != self.current_sentence[-1] and 
+                time_since_last < SENTENCE_END_TIMEOUT)):
+                self.current_sentence.append(self.last_prediction)
+                self.last_prediction_time = current_time
+                return False, None  # Continue collecting words
+        
+        # Only process sentence if:
+        # 1. We have words collected
+        # 2. Timer has expired
+        # 3. Sentence is in progress
+        if (self.sentence_in_progress and 
+            len(self.current_sentence) > 0 and 
+            time_since_last >= SENTENCE_END_TIMEOUT):
+            
+            refined_sentence = self.process_sentence()
+            self.sentence_in_progress = False
+            temp_sentence = self.current_sentence.copy()  # Store for returning
+            self.current_sentence = []
+            
+            return True, refined_sentence
+        
+        return False, None
 def main():
     st.title("Sign Language Detector")
     
-    # Create two columns
     col1, col2 = st.columns([2, 1])
     
     with col1:
-        # Add a placeholder for the video feed
         frame_placeholder = st.empty()
     
     with col2:
-        # Add placeholders for text display
-        st.markdown("### Detection Status")
+        st.markdown("### Live Detection")
         prediction_text = st.empty()
         confidence_text = st.empty()
         frame_count_text = st.empty()
         
-        # Add legend
-        st.markdown("### Legend")
-        st.markdown("""
-        - 🟢 Right Hand Landmarks
-        - 🔵 Left Hand Landmarks
-        - 🔴 Pose Landmarks (11-22)
-        """)
+        st.markdown("### Current Sentence")
+        words_text = st.empty()
+        sentence_status = st.empty()
+        
+        st.markdown("### Processed Sentences")
+        sentences_container = st.empty()
     
-    # Initialize detector
-    model_path = "models/best_model_24.pth"  # Update this path
+    if 'processed_sentences' not in st.session_state:
+        st.session_state.processed_sentences = []
+    
+    model_path = "models/best_model_24.pth"
     detector = SignLanguageDetector(model_path)
     
-    # Initialize webcam
     cap = cv2.VideoCapture(0)
     
     while cap.isOpened():
@@ -290,21 +396,23 @@ def main():
             st.error("Failed to capture frame")
             break
             
-        # Process frame and get features and annotated frame
         features, annotated_frame = detector.process_frame(frame)
-        
-        # Update frame buffer and check for motion
         detector.frame_buffer.append(features)
         
+        # Process motion and gestures
         if len(detector.frame_buffer) > 1:
             motion = np.mean(np.abs(detector.frame_buffer[-1] - detector.frame_buffer[-2]))
             
-            if not detector.gesture_in_progress and motion > MOTION_THRESHOLD:
-                detector.gesture_in_progress = True
-                detector.gesture_frames = []
-                detector.static_frame_counter = 0
+            # Reset timer when new motion starts
+            if motion > MOTION_THRESHOLD:
+                if not detector.gesture_in_progress:
+                    detector.gesture_in_progress = True
+                    detector.gesture_frames = []
+                    detector.static_frame_counter = 0
+                    # Reset the prediction timer when new motion starts
+                    detector.last_prediction_time = time.time()
             
-            elif detector.gesture_in_progress:
+            if detector.gesture_in_progress:
                 detector.gesture_frames.append(features)
                 
                 if motion < STATIC_THRESHOLD:
@@ -316,21 +424,55 @@ def main():
                     len(detector.gesture_frames) >= MAX_GESTURE_FRAMES):
                     
                     if len(detector.gesture_frames) >= MIN_GESTURE_FRAMES:
-                        detector.process_gesture(features)
+                        # Get prediction
+                        prediction, confidence = detector.process_gesture(features)
                     
                     detector.gesture_in_progress = False
                     detector.gesture_frames = []
                     detector.static_frame_counter = 0
         
-        # Display frame with landmarks
+        # Check for sentence completion
+        current_time = time.time()
+        if detector.sentence_in_progress:
+            time_since_last = current_time - detector.last_prediction_time
+            if time_since_last >= SENTENCE_END_TIMEOUT and detector.current_sentence:
+                refined_sentence = detector.process_sentence()
+                if refined_sentence:
+                    st.session_state.processed_sentences.append({
+                        'refined': refined_sentence
+                    })
+                detector.sentence_in_progress = False
+                detector.current_sentence = []
+        
+        # Update displays
         frame_placeholder.image(annotated_frame, channels="RGB")
         
-        # Update text displays
         if detector.last_prediction:
-            prediction_text.markdown(f"**Prediction:** {detector.last_prediction}")
+            prediction_text.markdown(f"**Current Sign:** {detector.last_prediction}")
             confidence_text.markdown(f"**Confidence:** {detector.last_confidence:.2%}")
         frame_count_text.markdown(f"**Frames:** {len(detector.gesture_frames)}")
         
+        # Show current sentence status
+        if detector.sentence_in_progress and detector.current_sentence:
+            words_text.markdown(f"**Words:** {' '.join(detector.current_sentence)}")
+            time_since_last = current_time - detector.last_prediction_time
+            time_left = max(0, SENTENCE_END_TIMEOUT - time_since_last)
+            sentence_status.markdown(f"⏱️ *Collecting words... ({time_left:.1f}s until sentence end)*")
+        else:
+            words_text.markdown("*Waiting for signs...*")
+            sentence_status.markdown("")
+        
+        # Display processed sentences
+        sentences_text = ""
+        if st.session_state.processed_sentences:
+            for sentence in reversed(st.session_state.processed_sentences[-5:]):
+                sentences_text += f"• {sentence['refined']}\n\n"
+        else:
+            sentences_text = "*No sentences yet...*"
+        sentences_container.markdown(sentences_text)
+        
+        time.sleep(0.01)
+    
     cap.release()
 
 if __name__ == "__main__":
