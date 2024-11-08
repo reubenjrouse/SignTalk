@@ -361,115 +361,275 @@ class SignLanguageDetector:
             return True, refined_sentence
         
         return False, None
+
+def process_tutorial_video(input_path):
+    """Process video to ensure compatibility with Streamlit"""
+    output_path = input_path.replace('.mp4', '_processed.mp4')
+    if not os.path.exists(output_path):
+        try:
+            os.system(f'ffmpeg -i {input_path} -vcodec libx264 {output_path}')
+            return output_path
+        except Exception as e:
+            st.error(f"Error processing video: {e}")
+            return None
+    return output_path
+
+@st.cache_resource
+def get_cap():
+    return cv2.VideoCapture(0)
+
+@st.cache_resource
+def initialize_detector(model_path):
+    return SignLanguageDetector(model_path)
+
+@st.cache_data
+def load_video(video_path):
+    return open(video_path, 'rb').read()
+
+def toggle_camera():
+    st.session_state.webcam_on = not st.session_state.webcam_on
+    if not st.session_state.webcam_on:
+        st.session_state.detection_active = False
+
+def toggle_detection():
+    if st.session_state.webcam_on:
+        st.session_state.detection_active = not st.session_state.detection_active
+
 def main():
-    st.title("Sign Language Detector")
+    # Custom CSS for consistent button sizes
+    st.markdown("""
+        <style>
+        .stButton > button {
+            width: 150px;
+            height: 50px;
+        }
+        .stRadio > label {
+            font-size: 1.2rem;
+            padding: 10px;
+        }
+        </style>
+    """, unsafe_allow_html=True)
+
+    st.title("Sign Language Learning and Detection")
     
-    col1, col2 = st.columns([2, 1])
-    
-    with col1:
-        frame_placeholder = st.empty()
-    
-    with col2:
-        st.markdown("### Live Detection")
-        prediction_text = st.empty()
-        confidence_text = st.empty()
-        frame_count_text = st.empty()
-        
-        st.markdown("### Current Sentence")
-        words_text = st.empty()
-        sentence_status = st.empty()
-        
-        st.markdown("### Processed Sentences")
-        sentences_container = st.empty()
-    
+    # Initialize states
+    if 'detection_active' not in st.session_state:
+        st.session_state.detection_active = False
+    if 'webcam_on' not in st.session_state:
+        st.session_state.webcam_on = False
     if 'processed_sentences' not in st.session_state:
         st.session_state.processed_sentences = []
+    if 'mode' not in st.session_state:
+        st.session_state.mode = "Word Detection"
     
-    model_path = "models/best_model_24.pth"
-    detector = SignLanguageDetector(model_path)
+    # Get cached resources
+    cap = get_cap()
+    detector = initialize_detector("models/best_model_24.pth")
     
-    cap = cv2.VideoCapture(0)
+    # Main interface
+    tab1, tab2, tab3 = st.tabs(["📹 Live Detection", "🎥 Tutorial Signs", "ℹ️ Instructions"])
     
+    with tab1:
+        st.markdown("### Detection Mode")
+        mode = st.radio("Select Mode", 
+               ["Word Detection", "Sentence Formation"],
+               horizontal=True,
+               key='mode')  # Remove the on_change parameter
+        
+        col1, col2, col3 = st.columns([1, 1, 4])
+        with col1:
+            st.button("Toggle Camera", 
+                     on_click=toggle_camera,
+                     key='camera_toggle')
+        
+        with col2:
+            st.button("Stop" if st.session_state.detection_active else "Start",
+                     on_click=toggle_detection,
+                     disabled=not st.session_state.webcam_on,
+                     key='detection_toggle')
+        
+        video_col, info_col = st.columns([2, 1])
+        
+        with video_col:
+            frame_placeholder = st.empty()
+            if not st.session_state.webcam_on:
+                frame_placeholder.markdown("""
+                    <div style='background-color: black; color: white; padding: 20px; 
+                         text-align: center; border-radius: 10px; height: 400px; 
+                         display: flex; align-items: center; justify-content: center;'>
+                        <div>
+                            Camera is turned off<br>
+                            Click 'Toggle Camera' to start
+                        </div>
+                    </div>
+                    """, unsafe_allow_html=True)
+        
+        with info_col:
+            st.markdown("### Live Detection")
+            prediction_text = st.empty()
+            confidence_text = st.empty()
+            frame_count_text = st.empty()
+            
+            if st.session_state.mode == "Sentence Formation":
+                st.markdown("### Current Sentence")
+                words_text = st.empty()
+                sentence_status = st.empty()
+                
+                st.markdown("### Processed Sentences")
+                sentences_container = st.empty()
+
+    with tab2:
+        st.markdown("### Learn Sign Language")
+        st.markdown("Click on any word to see its tutorial video")
+        
+        # Load cached videos
+        sign_tutorials = {
+            "Hello": {
+                "video": load_video("Doctor_13_features.mp4"),
+                "description": "Wave your hand in a friendly greeting motion."
+            },
+            "Thank you": {
+                "video": load_video("Doctor_13_features.mp4"),
+                "description": "Touch your chin with your fingertips and move your hand forward."
+            },
+            "Good Morning": {
+                "video": load_video("Doctor_13_features.mp4"),
+                "description": "Combine the signs for 'good' and 'morning'."
+            }
+        }
+        
+        cols = st.columns(3)
+        for idx, (sign, info) in enumerate(sign_tutorials.items()):
+            with cols[idx % 3]:
+                st.markdown(f"#### {sign}")
+                if st.button(f"Watch Tutorial", key=f"btn_{sign}"):
+                    st.session_state.selected_tutorial = sign
+                st.markdown(info["description"])
+                st.markdown("---")
+        
+        if 'selected_tutorial' in st.session_state:
+            sign = st.session_state.selected_tutorial
+            if sign in sign_tutorials:
+                st.markdown(f"### Tutorial for: {sign}")
+                st.video(sign_tutorials[sign]["video"])
+                st.markdown(sign_tutorials[sign]["description"])
+
+    with tab3:
+        st.markdown("""
+        ### How to Use the App
+        
+        #### Detection Modes
+        1. **Word Detection Mode:**
+           - Detects individual signs as you make them
+           - Shows real-time confidence scores
+           - Perfect for practice and learning
+        
+        2. **Sentence Formation Mode:**
+           - Collects multiple signs into sentences
+           - Wait 3 seconds to complete a sentence
+           - Automatically processes and displays sentences
+        
+        #### Using the App
+        1. Toggle the camera on
+        2. Select your preferred mode
+        3. Click Start to begin detection
+        4. Make signs clearly in front of the camera
+        5. Keep your hands within the camera frame
+        
+        #### Tips for Better Detection
+        - Ensure good lighting
+        - Keep a steady position
+        - Make clear, deliberate signs
+        - Pause briefly between signs
+        - Stay within camera view
+        """)
+    
+    # Main detection loop
     while cap.isOpened():
         ret, frame = cap.read()
         if not ret:
             st.error("Failed to capture frame")
             break
-            
-        features, annotated_frame = detector.process_frame(frame)
-        detector.frame_buffer.append(features)
         
-        # Process motion and gestures
-        if len(detector.frame_buffer) > 1:
-            motion = np.mean(np.abs(detector.frame_buffer[-1] - detector.frame_buffer[-2]))
+        if st.session_state.webcam_on:
+            features, annotated_frame = detector.process_frame(frame)
+            frame_placeholder.image(annotated_frame, channels="RGB")
             
-            # Reset timer when new motion starts
-            if motion > MOTION_THRESHOLD:
-                if not detector.gesture_in_progress:
-                    detector.gesture_in_progress = True
-                    detector.gesture_frames = []
-                    detector.static_frame_counter = 0
-                    # Reset the prediction timer when new motion starts
-                    detector.last_prediction_time = time.time()
-            
-            if detector.gesture_in_progress:
-                detector.gesture_frames.append(features)
+            if st.session_state.detection_active:
+                detector.frame_buffer.append(features)
                 
-                if motion < STATIC_THRESHOLD:
-                    detector.static_frame_counter += 1
-                else:
-                    detector.static_frame_counter = 0
+                if len(detector.frame_buffer) > 1:
+                    motion = np.mean(np.abs(detector.frame_buffer[-1] - detector.frame_buffer[-2]))
+                    
+                    if motion > MOTION_THRESHOLD:
+                        if not detector.gesture_in_progress:
+                            detector.gesture_in_progress = True
+                            detector.gesture_frames = []
+                            detector.static_frame_counter = 0
+                            detector.last_prediction_time = time.time()
+                    
+                    if detector.gesture_in_progress:
+                        detector.gesture_frames.append(features)
+                        
+                        if motion < STATIC_THRESHOLD:
+                            detector.static_frame_counter += 1
+                        else:
+                            detector.static_frame_counter = 0
+                        
+                        if (detector.static_frame_counter >= STATIC_FRAME_COUNT or 
+                            len(detector.gesture_frames) >= MAX_GESTURE_FRAMES):
+                            
+                            if len(detector.gesture_frames) >= MIN_GESTURE_FRAMES:
+                                prediction, confidence = detector.process_gesture(features)
+                                
+                                if st.session_state.mode == "Word Detection":
+                                    prediction_text.markdown(f"**Detected Sign:** {detector.last_prediction}")
+                                    confidence_text.markdown(f"**Confidence:** {detector.last_confidence:.2%}")
+                            
+                            detector.gesture_in_progress = False
+                            detector.gesture_frames = []
+                            detector.static_frame_counter = 0
                 
-                if (detector.static_frame_counter >= STATIC_FRAME_COUNT or 
-                    len(detector.gesture_frames) >= MAX_GESTURE_FRAMES):
+                # Handle sentence mode
+                if st.session_state.mode == "Sentence Formation":
+                    current_time = time.time()
+                    if detector.sentence_in_progress:
+                        time_since_last = current_time - detector.last_prediction_time
+                        if time_since_last >= SENTENCE_END_TIMEOUT and detector.current_sentence:
+                            refined_sentence = detector.process_sentence()
+                            if refined_sentence:
+                                st.session_state.processed_sentences.append({
+                                    'refined': refined_sentence
+                                })
+                            detector.sentence_in_progress = False
+                            detector.current_sentence = []
                     
-                    if len(detector.gesture_frames) >= MIN_GESTURE_FRAMES:
-                        # Get prediction
-                        prediction, confidence = detector.process_gesture(features)
+                    # Update sentence displays
+                    if detector.sentence_in_progress and detector.current_sentence:
+                        words_text.markdown(f"**Words:** {' '.join(detector.current_sentence)}")
+                        time_since_last = current_time - detector.last_prediction_time
+                        time_left = max(0, SENTENCE_END_TIMEOUT - time_since_last)
+                        sentence_status.markdown(f"⏱️ *Collecting words... ({time_left:.1f}s until sentence end)*")
+                    else:
+                        words_text.markdown("*Waiting for signs...*")
+                        sentence_status.markdown("")
                     
-                    detector.gesture_in_progress = False
-                    detector.gesture_frames = []
-                    detector.static_frame_counter = 0
-        
-        # Check for sentence completion
-        current_time = time.time()
-        if detector.sentence_in_progress:
-            time_since_last = current_time - detector.last_prediction_time
-            if time_since_last >= SENTENCE_END_TIMEOUT and detector.current_sentence:
-                refined_sentence = detector.process_sentence()
-                if refined_sentence:
-                    st.session_state.processed_sentences.append({
-                        'refined': refined_sentence
-                    })
-                detector.sentence_in_progress = False
-                detector.current_sentence = []
-        
-        # Update displays
-        frame_placeholder.image(annotated_frame, channels="RGB")
-        
-        if detector.last_prediction:
-            prediction_text.markdown(f"**Current Sign:** {detector.last_prediction}")
-            confidence_text.markdown(f"**Confidence:** {detector.last_confidence:.2%}")
-        frame_count_text.markdown(f"**Frames:** {len(detector.gesture_frames)}")
-        
-        # Show current sentence status
-        if detector.sentence_in_progress and detector.current_sentence:
-            words_text.markdown(f"**Words:** {' '.join(detector.current_sentence)}")
-            time_since_last = current_time - detector.last_prediction_time
-            time_left = max(0, SENTENCE_END_TIMEOUT - time_since_last)
-            sentence_status.markdown(f"⏱️ *Collecting words... ({time_left:.1f}s until sentence end)*")
-        else:
-            words_text.markdown("*Waiting for signs...*")
-            sentence_status.markdown("")
-        
-        # Display processed sentences
-        sentences_text = ""
-        if st.session_state.processed_sentences:
-            for sentence in reversed(st.session_state.processed_sentences[-5:]):
-                sentences_text += f"• {sentence['refined']}\n\n"
-        else:
-            sentences_text = "*No sentences yet...*"
-        sentences_container.markdown(sentences_text)
+                    # Display processed sentences
+                    sentences_text = ""
+                    if st.session_state.processed_sentences:
+                        for sentence in reversed(st.session_state.processed_sentences[-5:]):
+                            sentences_text += f"• {sentence['refined']}\n\n"
+                    else:
+                        sentences_text = "*No sentences yet...*"
+                    sentences_container.markdown(sentences_text)
+            
+            if not st.session_state.detection_active:
+                prediction_text.markdown("*Detection paused*")
+                confidence_text.empty()
+                frame_count_text.empty()
+                if st.session_state.mode == "Sentence Formation":
+                    words_text.markdown("*Detection paused*")
+                    sentence_status.empty()
         
         time.sleep(0.01)
     
